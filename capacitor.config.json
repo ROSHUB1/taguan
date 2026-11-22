@@ -1,0 +1,11 @@
+{
+  "appId": "com.taguan.game",
+  "appName": "TAGUAN",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#121836"
+  }
+}
