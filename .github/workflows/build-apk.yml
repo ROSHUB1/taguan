@@ -1,0 +1,106 @@
+name: Build Android APK (Godot)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.4.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools build-tools;34.0.0 build-tools;35.0.1 platforms;android-35 cmdline-tools;latest"
+
+      - name: Install Godot and export templates
+        run: |
+          set -e
+          V="${GODOT_VERSION}-stable"
+          BASE1="https://github.com/godotengine/godot-builds/releases/download/${V}"
+          BASE2="https://github.com/godotengine/godot/releases/download/${V}"
+          wget -q "${BASE1}/Godot_v${V}_linux.x86_64.zip" -O godot.zip || wget -q "${BASE2}/Godot_v${V}_linux.x86_64.zip" -O godot.zip
+          wget -q "${BASE1}/Godot_v${V}_export_templates.tpz" -O templates.tpz || wget -q "${BASE2}/Godot_v${V}_export_templates.tpz" -O templates.tpz
+          unzip -q godot.zip
+          sudo mv "Godot_v${V}_linux.x86_64" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          unzip -q templates.tpz -d tpl
+          mv tpl/templates "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          godot --version
+
+      - name: Debug keystore and Godot editor settings
+        run: |
+          set -e
+          keytool -genkeypair -v -keystore "$HOME/debug.keystore" -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p "$HOME/.config/godot"
+          for f in editor_settings-4.tres editor_settings-4.4.tres; do
+            cat > "$HOME/.config/godot/$f" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${ANDROID_HOME}"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          export/android/debug_keystore = "${HOME}/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          export/android/shutdown_adb_on_exit = true
+          EOF
+          done
+          cat "$HOME/.config/godot/editor_settings-4.4.tres"
+
+      - name: Import project (builds the class cache and imports art)
+        run: |
+          godot --headless --path . --import || true
+          godot --headless --path . --import || true
+
+      - name: Self-test (full rounds on every map, headless)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          godot --headless --path . -- --smoke 2>&1 | tee smoke.log
+          grep -q "SMOKE OK" smoke.log
+          ! grep -E "SCRIPT ERROR|Parse Error|Compile Error" smoke.log
+
+      - name: Export debug APK
+        run: |
+          set -e
+          export GODOT_ANDROID_KEYSTORE_DEBUG_PATH="$HOME/debug.keystore"
+          export GODOT_ANDROID_KEYSTORE_DEBUG_USER="androiddebugkey"
+          export GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD="android"
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/taguan.apk 2>&1 | tee export.log
+          ls -la build
+          test -s build/taguan.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: taguan-debug-apk
+          path: build/taguan.apk
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            smoke.log
+            export.log
+          if-no-files-found: ignore
